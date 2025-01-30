@@ -20,33 +20,45 @@
 
 #define UA_MAX_METHOD_ARGUMENTS 64
 
+struct GetArgumentsNodeContext {
+    UA_Server *server;
+    UA_String withBrowseName;
+};
+
+static void *
+getArgumentsNodeCallback(void *context, UA_ReferenceTarget *t) {
+    struct GetArgumentsNodeContext *ctx = (struct GetArgumentsNodeContext*)context;
+    const UA_Node *refTarget =
+        UA_NODESTORE_GETFROMREF_SELECTIVE(ctx->server, t->targetId,
+                                          UA_NODEATTRIBUTESMASK_NODECLASS |
+                                          UA_NODEATTRIBUTESMASK_VALUE,
+                                          UA_REFERENCETYPESET_NONE,
+                                          UA_BROWSEDIRECTION_INVALID);
+    if(!refTarget)
+        return NULL;
+    if(refTarget->head.nodeClass == UA_NODECLASS_VARIABLE &&
+       refTarget->head.browseName.namespaceIndex == 0 &&
+       UA_String_equal(&ctx->withBrowseName, &refTarget->head.browseName.name)) {
+        return (void*)(uintptr_t)&refTarget->variableNode;
+    }
+    UA_NODESTORE_RELEASE(ctx->server, refTarget);
+    return NULL;
+}
+
 static const UA_VariableNode *
 getArgumentsVariableNode(UA_Server *server, const UA_NodeHead *head,
                          UA_String withBrowseName) {
     for(size_t i = 0; i < head->referencesSize; ++i) {
-        const UA_NodeReferenceKind *rk = &head->references[i];
+        UA_NodeReferenceKind *rk = &head->references[i];
         if(rk->isInverse)
             continue;
         if(rk->referenceTypeIndex != UA_REFERENCETYPEINDEX_HASPROPERTY)
             continue;
-        const UA_ReferenceTarget *t = NULL;
-        while((t = UA_NodeReferenceKind_iterate(rk, t))) {
-            /* Get only the NodeClass and Value attributes, no references */
-            const UA_Node *refTarget =
-                UA_NODESTORE_GETFROMREF_SELECTIVE(server, t->targetId,
-                                                  UA_NODEATTRIBUTESMASK_NODECLASS |
-                                                  UA_NODEATTRIBUTESMASK_VALUE,
-                                                  UA_REFERENCETYPESET_NONE,
-                                                  UA_BROWSEDIRECTION_INVALID);
-            if(!refTarget)
-                continue;
-            if(refTarget->head.nodeClass == UA_NODECLASS_VARIABLE &&
-               refTarget->head.browseName.namespaceIndex == 0 &&
-               UA_String_equal(&withBrowseName, &refTarget->head.browseName.name)) {
-                return &refTarget->variableNode;
-            }
-            UA_NODESTORE_RELEASE(server, refTarget);
-        }
+        struct GetArgumentsNodeContext ctx;
+        ctx.server = server;
+        ctx.withBrowseName = withBrowseName;
+        return (const UA_VariableNode*)
+            UA_NodeReferenceKind_iterate(rk, getArgumentsNodeCallback, &ctx);
     }
     return NULL;
 }
@@ -80,15 +92,10 @@ checkAdjustArguments(UA_Server *server, UA_Session *session,
     UA_Argument *argReqs = (UA_Argument*)argRequirements->value.data.value.value.data;
     const char *reason;
     for(size_t i = 0; i < argReqsSize; ++i) {
-        if(compatibleValue(server, session, &argReqs[i].dataType, argReqs[i].valueRank,
-                           argReqs[i].arrayDimensionsSize, argReqs[i].arrayDimensions,
-                           &args[i], NULL, &reason))
-            continue;
-
         /* Incompatible value. Try to correct the type if possible. */
         adjustValueType(server, &args[i], &argReqs[i].dataType);
 
-        /* Recheck */
+        /* Check */
         if(!compatibleValue(server, session, &argReqs[i].dataType, argReqs[i].valueRank,
                             argReqs[i].arrayDimensionsSize, argReqs[i].arrayDimensions,
                             &args[i], NULL, &reason)) {
@@ -121,6 +128,19 @@ checkMethodReference(const UA_NodeHead *h, UA_ReferenceTypeSet refs,
     return false;
 }
 
+static void *
+iterateFunctionGroupSearch(void *context, UA_ReferenceTarget *t) {
+    UA_Server *server = (UA_Server*)context;
+    if(!UA_NodePointer_isLocal(t->targetId))
+        return NULL;
+
+    UA_NodeId tmpId = UA_NodePointer_toNodeId(t->targetId);
+    if(isNodeInTree_singleRef(server, &tmpId, &functionGroupNodeId,
+                               UA_REFERENCETYPEINDEX_HASSUBTYPE))
+        return (void*)0x01;
+    return NULL;
+}
+
 static UA_StatusCode
 checkFunctionalGroupMethodReference(UA_Server *server, const UA_NodeHead *h,
                                     const UA_ExpandedNodeId *methodId,
@@ -139,7 +159,7 @@ checkFunctionalGroupMethodReference(UA_Server *server, const UA_NodeHead *h,
     /* Search for a HasTypeDefinition (or sub-) reference to the FunctionGroupType */
     UA_Boolean isFunctionGroup = false;
     for(size_t i = 0; i < h->referencesSize && !isFunctionGroup; ++i) {
-        const UA_NodeReferenceKind *rk = &h->references[i];
+        UA_NodeReferenceKind *rk = &h->references[i];
         if(rk->isInverse)
             continue;
 
@@ -149,18 +169,11 @@ checkFunctionalGroupMethodReference(UA_Server *server, const UA_NodeHead *h,
 
         /* Reference points to FunctionGroupType (or sub-type) from the DI
          * model? */
-        const UA_ReferenceTarget *t = NULL;
-        while((t = UA_NodeReferenceKind_iterate(rk, t))) {
-            if(!UA_NodePointer_isLocal(t->targetId))
-                continue;
-
-            UA_NodeId tmpId = UA_NodePointer_toNodeId(t->targetId);
-            if(!isNodeInTree_singleRef(server, &tmpId, &functionGroupNodeId,
-                                       UA_REFERENCETYPEINDEX_HASSUBTYPE))
-                continue;
-            isFunctionGroup = true;
+        isFunctionGroup =
+            (UA_NodeReferenceKind_iterate(rk, iterateFunctionGroupSearch,
+                                          server) != NULL);
+        if(isFunctionGroup)
             break;
-        }
     }
     if(!isFunctionGroup)
         return UA_STATUSCODE_GOOD;
@@ -188,6 +201,8 @@ static void
 callWithMethodAndObject(UA_Server *server, UA_Session *session,
                         const UA_CallMethodRequest *request, UA_CallMethodResult *result,
                         const UA_MethodNode *method, const UA_ObjectNode *object) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+
     /* Verify the object's NodeClass */
     if(object->head.nodeClass != UA_NODECLASS_OBJECT &&
        object->head.nodeClass != UA_NODECLASS_OBJECTTYPE) {
@@ -254,7 +269,7 @@ callWithMethodAndObject(UA_Server *server, UA_Session *session,
         UA_UNLOCK(&server->serviceMutex);
         executable = executable && server->config.accessControl.
             getUserExecutableOnObject(server, &server->config.accessControl,
-                                      &session->sessionId, session->sessionHandle,
+                                      &session->sessionId, session->context,
                                       &request->methodId, method->head.context,
                                       &request->objectId, object->head.context);
         UA_LOCK(&server->serviceMutex);
@@ -275,8 +290,10 @@ callWithMethodAndObject(UA_Server *server, UA_Session *session,
         return;
     }
     UA_Variant mutableInputArgs[UA_MAX_METHOD_ARGUMENTS];
-    memcpy(mutableInputArgs, request->inputArguments,
-           sizeof(UA_Variant) * request->inputArgumentsSize);
+    if(request->inputArgumentsSize > 0) {
+        memcpy(mutableInputArgs, request->inputArguments,
+               sizeof(UA_Variant) * request->inputArgumentsSize);
+    }
 
     /* Allocate the inputArgumentResults array */
     result->inputArgumentResults = (UA_StatusCode*)
@@ -335,7 +352,7 @@ callWithMethodAndObject(UA_Server *server, UA_Session *session,
 
     /* Call the method */
     UA_UNLOCK(&server->serviceMutex);
-    result->statusCode = method->method(server, &session->sessionId, session->sessionHandle,
+    result->statusCode = method->method(server, &session->sessionId, session->context,
                                         &method->head.nodeId, method->head.context,
                                         &object->head.nodeId, object->head.context,
                                         request->inputArgumentsSize, mutableInputArgs,
@@ -361,7 +378,7 @@ Operation_CallMethodAsync(UA_Server *server, UA_Session *session, UA_UInt32 requ
                                    UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASPROPERTY),
                                    UA_BROWSEDIRECTION_FORWARD);
     if(!method) {
-        opResult->statusCode = UA_STATUSCODE_BADNODEIDUNKNOWN;
+        opResult->statusCode = UA_STATUSCODE_BADMETHODINVALID;
         return;
     }
 
@@ -414,7 +431,7 @@ void
 Service_CallAsync(UA_Server *server, UA_Session *session, UA_UInt32 requestId,
                   const UA_CallRequest *request, UA_CallResponse *response,
                   UA_Boolean *finished) {
-    UA_LOG_DEBUG_SESSION(&server->config.logger, session, "Processing CallRequestAsync");
+    UA_LOG_DEBUG_SESSION(server->config.logging, session, "Processing CallRequestAsync");
     if(server->config.maxNodesPerMethodCall != 0 &&
         request->methodsToCallSize > server->config.maxNodesPerMethodCall) {
         response->responseHeader.serviceResult = UA_STATUSCODE_BADTOOMANYOPERATIONS;
@@ -458,7 +475,7 @@ Operation_CallMethod(UA_Server *server, UA_Session *session, void *context,
                                    UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASPROPERTY),
                                    UA_BROWSEDIRECTION_FORWARD);
     if(!method) {
-        result->statusCode = UA_STATUSCODE_BADNODEIDUNKNOWN;
+        result->statusCode = UA_STATUSCODE_BADMETHODINVALID;
         return;
     }
 
@@ -488,8 +505,8 @@ Operation_CallMethod(UA_Server *server, UA_Session *session, void *context,
 
 void Service_Call(UA_Server *server, UA_Session *session,
                   const UA_CallRequest *request, UA_CallResponse *response) {
-    UA_LOG_DEBUG_SESSION(&server->config.logger, session, "Processing CallRequest");
-    UA_LOCK_ASSERT(&server->serviceMutex, 1);
+    UA_LOG_DEBUG_SESSION(server->config.logging, session, "Processing CallRequest");
+    UA_LOCK_ASSERT(&server->serviceMutex);
 
     if(server->config.maxNodesPerMethodCall != 0 &&
        request->methodsToCallSize > server->config.maxNodesPerMethodCall) {

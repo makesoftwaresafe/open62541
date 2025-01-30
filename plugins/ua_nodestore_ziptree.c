@@ -6,7 +6,7 @@
  *    Copyright 2017 (c) Stefan Profanter, fortiss GmbH
  */
 
-#include <open62541/types_generated_handling.h>
+#include <open62541/types.h>
 #include <open62541/plugin/nodestore_default.h>
 #include "ziptree.h"
 
@@ -273,7 +273,7 @@ zipNsInsertNode(void *nsCtx, UA_Node *node, UA_NodeId *addedNodeId) {
 
     /* Insert the node */
     entry->nodeIdHash = dummy.nodeIdHash;
-    ZIP_INSERT(NodeTree, &ns->root, entry, UA_UInt32_random());
+    ZIP_INSERT(NodeTree, &ns->root, entry);
     return UA_STATUSCODE_GOOD;
 }
 
@@ -302,7 +302,7 @@ zipNsReplaceNode(void *nsCtx, UA_Node *node) {
     ZipContext *ns = (ZipContext*)nsCtx;
     ZIP_REMOVE(NodeTree, &ns->root, oldEntry);
     entry->nodeIdHash = oldEntry->nodeIdHash;
-    ZIP_INSERT(NodeTree, &ns->root, entry, ZIP_RANK(entry, zipfields));
+    ZIP_INSERT(NodeTree, &ns->root, entry);
     oldEntry->deleted = true;
 
     zipNsReleaseNode(nsCtx, oldNode);
@@ -337,10 +337,11 @@ struct VisitorData {
     void *visitorContext;
 };
 
-static void
-nodeVisitor(NodeEntry *entry, void *data) {
+static void *
+nodeVisitor(void *data, NodeEntry *entry) {
     struct VisitorData *d = (struct VisitorData*)data;
     d->visitor(d->visitorContext, (UA_Node*)&entry->nodeId);
+    return NULL;
 }
 
 static void
@@ -353,9 +354,10 @@ zipNsIterate(void *nsCtx, UA_NodestoreVisitor visitor,
     ZIP_ITER(NodeTree, &ns->root, nodeVisitor, &d);
 }
 
-static void
-deleteNodeVisitor(NodeEntry *entry, void *data) {
+static void *
+deleteNodeVisitor(void *data, NodeEntry *entry) {
     deleteEntry(entry);
+    return NULL;
 }
 
 /***********************/
@@ -400,6 +402,19 @@ UA_Nodestore_ZipTree(UA_Nodestore *ns) {
     ns->removeNode = zipNsRemoveNode;
     ns->getReferenceTypeId = zipNsGetReferenceTypeId;
     ns->iterate = zipNsIterate;
+
+    /* All nodes are stored in RAM. Changes are made in-situ. GetEditNode is
+     * identical to GetNode -- but the Node pointer is non-const. */
+    ns->getEditNode =
+        (UA_Node * (*)(void *nsCtx, const UA_NodeId *nodeId,
+                       UA_UInt32 attributeMask,
+                       UA_ReferenceTypeSet references,
+                       UA_BrowseDirection referenceDirections))zipNsGetNode;
+    ns->getEditNodeFromPtr =
+        (UA_Node * (*)(void *nsCtx, UA_NodePointer ptr,
+                       UA_UInt32 attributeMask,
+                       UA_ReferenceTypeSet references,
+                       UA_BrowseDirection referenceDirections))zipNsGetNodeFromPtr;
 
     return UA_STATUSCODE_GOOD;
 }

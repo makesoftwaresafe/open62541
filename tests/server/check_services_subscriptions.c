@@ -10,12 +10,15 @@
 #include "server/ua_subscription.h"
 
 #include <check.h>
+#include <stdlib.h>
 
+#include "test_helpers.h"
 #include "testing_clock.h"
 
 static UA_Server *server = NULL;
 static UA_Session *session = NULL;
 static UA_UInt32 monitored = 0; /* Number of active MonitoredItems */
+static UA_Double defaultRequestedPublishingInterval = 100;  /* in ms */
 
 static void
 monitoredRegisterCallback(UA_Server *s,
@@ -40,9 +43,9 @@ createSession(void) {
 }
 
 static void setup(void) {
-    server = UA_Server_new();
+    server = UA_Server_newForUnitTest();
+    ck_assert(server != NULL);
     UA_ServerConfig *config = UA_Server_getConfig(server);
-    UA_ServerConfig_setDefault(config);
     config->monitoredItemRegisterCallback = monitoredRegisterCallback;
     UA_Server_run_startup(server);
     createSession();
@@ -142,7 +145,7 @@ START_TEST(Server_modifySubscription) {
     UA_ModifySubscriptionRequest_init(&request);
     request.subscriptionId = subscriptionId;
     // just some arbitrary numbers to test. They have no specific reason
-    request.requestedPublishingInterval = 100; // in ms
+    request.requestedPublishingInterval = defaultRequestedPublishingInterval;
     request.requestedLifetimeCount = 1000;
     request.requestedMaxKeepAliveCount = 1000;
     request.maxNotificationsPerPublish = 1;
@@ -424,7 +427,9 @@ START_TEST(Server_overflow) {
 
     UA_fakeSleep(1); /* modify the server's currenttime */
 
-    UA_MonitoredItem_sampleCallback(server, mon);
+    UA_LOCK(&server->serviceMutex);
+    UA_MonitoredItem_sample(server, mon);
+    UA_UNLOCK(&server->serviceMutex);
     ck_assert_uint_eq(mon->queueSize, 2);
     ck_assert_uint_eq(mon->parameters.queueSize, 3);
     notification = TAILQ_LAST(&mon->queue, NotificationQueue);
@@ -432,7 +437,9 @@ START_TEST(Server_overflow) {
 
     UA_fakeSleep(1); /* modify the server's currenttime */
 
-    UA_MonitoredItem_sampleCallback(server, mon);
+    UA_LOCK(&server->serviceMutex);
+    UA_MonitoredItem_sample(server, mon);
+    UA_UNLOCK(&server->serviceMutex);
     ck_assert_uint_eq(mon->queueSize, 3);
     ck_assert_uint_eq(mon->parameters.queueSize, 3);
     notification = TAILQ_LAST(&mon->queue, NotificationQueue);
@@ -440,7 +447,9 @@ START_TEST(Server_overflow) {
 
     UA_fakeSleep(1); /* modify the server's currenttime */
 
-    UA_MonitoredItem_sampleCallback(server, mon);
+    UA_LOCK(&server->serviceMutex);
+    UA_MonitoredItem_sample(server, mon);
+    UA_UNLOCK(&server->serviceMutex);
     ck_assert_uint_eq(mon->queueSize, 3);
     ck_assert_uint_eq(mon->parameters.queueSize, 3);
     notification = TAILQ_FIRST(&mon->queue);
@@ -544,7 +553,9 @@ START_TEST(Server_overflow) {
     UA_MonitoredItemModifyRequest_clear(&itemToModify);
     UA_ModifyMonitoredItemsResponse_clear(&modifyMonitoredItemsResponse);
 
-    UA_MonitoredItem_sampleCallback(server, mon);
+    UA_LOCK(&server->serviceMutex);
+    UA_MonitoredItem_sample(server, mon);
+    UA_UNLOCK(&server->serviceMutex);
     ck_assert_uint_eq(mon->queueSize, 1);
     ck_assert_uint_eq(mon->parameters.queueSize, 1);
     notification = TAILQ_FIRST(&mon->queue);
@@ -809,7 +820,7 @@ START_TEST(Server_invalidPublishingInterval) {
 }
 END_TEST
 
-START_TEST(Server_invalidSamplingInterval) {
+START_TEST(Server_negativeSamplingInterval) {
     createSubscription();
 
     UA_Double savedSamplingIntervalLimitsMin = server->config.samplingIntervalLimits.min;
@@ -830,7 +841,7 @@ START_TEST(Server_invalidSamplingInterval) {
     item.monitoringMode = UA_MONITORINGMODE_REPORTING;
     UA_MonitoringParameters params;
     UA_MonitoringParameters_init(&params);
-    params.samplingInterval = -5.0; // Must be positive
+    params.samplingInterval = -5.0;
     item.requestedParameters = params;
     request.itemsToCreateSize = 1;
     request.itemsToCreate = &item;
@@ -843,7 +854,7 @@ START_TEST(Server_invalidSamplingInterval) {
     ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(response.resultsSize, 1);
     ck_assert_uint_eq(response.results[0].statusCode, UA_STATUSCODE_GOOD);
-    ck_assert(response.results[0].revisedSamplingInterval == 0.0);
+    ck_assert(response.results[0].revisedSamplingInterval > 0.0);
 
     UA_MonitoredItemCreateRequest_clear(&item);
     UA_CreateMonitoredItemsResponse_clear(&response);
@@ -862,7 +873,7 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_server, Server_createSubscription);
     tcase_add_test(tc_server, Server_modifySubscription);
     tcase_add_test(tc_server, Server_setPublishingMode);
-    tcase_add_test(tc_server, Server_invalidSamplingInterval);
+    tcase_add_test(tc_server, Server_negativeSamplingInterval);
     tcase_add_test(tc_server, Server_createMonitoredItems);
     tcase_add_test(tc_server, Server_modifyMonitoredItems);
     tcase_add_test(tc_server, Server_overflow);

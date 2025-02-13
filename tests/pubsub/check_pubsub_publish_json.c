@@ -5,27 +5,25 @@
  * Copyright (c) 2017 - 2018 Fraunhofer IOSB (Author: Andreas Ebner)
  */
 
-#include <open62541/plugin/pubsub_udp.h>
 #include <open62541/server_config_default.h>
 #include <open62541/server_pubsub.h>
 #include <open62541/types.h>
 
-#include "ua_pubsub.h"
-#include "ua_server_internal.h"
+#include "ua_pubsub_internal.h"
+#include "test_helpers.h"
 
 #include <check.h>
+#include <stdlib.h>
 
 UA_Server *server = NULL;
 UA_NodeId connection1, writerGroup1, publishedDataSet1, dataSetWriter1;
 
 static void setup(void) {
-    server = UA_Server_new();
-    UA_ServerConfig *config = UA_Server_getConfig(server);
-    UA_ServerConfig_setDefault(config);
-
-    UA_ServerConfig_addPubSubTransportLayer(config, UA_PubSubTransportLayerUDPMP());
-
+    server = UA_Server_newForUnitTest();
+    ck_assert(server != NULL);
     UA_Server_run_startup(server);
+
+    UA_StatusCode retVal = UA_STATUSCODE_GOOD;
     UA_PubSubConnectionConfig connectionConfig;
     memset(&connectionConfig, 0, sizeof(UA_PubSubConnectionConfig));
     connectionConfig.name = UA_STRING("UADP Connection");
@@ -35,7 +33,8 @@ static void setup(void) {
                          &UA_TYPES[UA_TYPES_NETWORKADDRESSURLDATATYPE]);
     connectionConfig.transportProfileUri =
         UA_STRING("http://opcfoundation.org/UA-Profile/Transport/pubsub-udp-uadp");
-    UA_Server_addPubSubConnection(server, &connectionConfig, &connection1);
+    retVal |= UA_Server_addPubSubConnection(server, &connectionConfig, &connection1);
+    ck_assert_int_eq(retVal, UA_STATUSCODE_GOOD);
 }
 
 static void teardown(void) {
@@ -59,8 +58,6 @@ START_TEST(SinglePublishDataSetField){
     writerGroupConfig.encodingMimeType = UA_PUBSUB_ENCODING_JSON;
     UA_StatusCode retVal =
         UA_Server_addWriterGroup(server, connection1, &writerGroupConfig, &writerGroup1);
-    ck_assert_int_eq(retVal, UA_STATUSCODE_GOOD);
-    retVal = UA_Server_setWriterGroupOperational(server, writerGroup1);
     ck_assert_int_eq(retVal, UA_STATUSCODE_GOOD);
 
     UA_PublishedDataSetConfig pdsConfig;
@@ -90,9 +87,13 @@ START_TEST(SinglePublishDataSetField){
                                         &dataSetWriterConfig, &dataSetWriter1);
     ck_assert_int_eq(retVal, UA_STATUSCODE_GOOD);
 
-    UA_WriterGroup *wg = UA_WriterGroup_findWGbyId(server, writerGroup1);
-    ck_assert(wg != 0);
-    UA_WriterGroup_publishCallback(server, wg);
+    retVal = UA_Server_enableDataSetWriter(server, dataSetWriter1);
+    ck_assert_int_eq(retVal, UA_STATUSCODE_GOOD);
+
+    retVal = UA_Server_enableWriterGroup(server, writerGroup1);
+    ck_assert_int_eq(retVal, UA_STATUSCODE_GOOD);
+
+    UA_Server_WriterGroup_publish(server, writerGroup1);
 } END_TEST
 
 int main(void) {

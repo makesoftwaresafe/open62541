@@ -5,12 +5,15 @@
 #include <open62541/client_highlevel.h>
 
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "custom_datatype.h"
 
 #define STRING_BUFFER_SIZE 20
 
 int main(void) {
+    setupCustomTypes();
+
     /* Make your custom datatype known to the stack */
     UA_DataType types[4];
     types[0] = PointType;
@@ -20,7 +23,7 @@ int main(void) {
 
     /* Attention! Here the custom datatypes are allocated on the stack. So they
      * cannot be accessed from parallel (worker) threads. */
-    UA_DataTypeArray customDataTypes = {NULL, 4, types};
+    UA_DataTypeArray customDataTypes = {NULL, 4, types, UA_FALSE};
 
     UA_Client *client = UA_Client_new();
     UA_ClientConfig *cc = UA_Client_getConfig(client);

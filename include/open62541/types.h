@@ -11,6 +11,7 @@
  *    Copyright 2015-2016 (c) Oleksiy Vasylyev
  *    Copyright 2017 (c) Stefan Profanter, fortiss GmbH
  *    Copyright 2017 (c) Thomas Stalder, Blue Time Concept SA
+ *    Copyright 2023 (c) Fraunhofer IOSB (Author: Andreas Ebner)
  */
 
 #ifndef UA_TYPES_H_
@@ -19,6 +20,9 @@
 #include <open62541/config.h>
 #include <open62541/common.h>
 #include <open62541/statuscodes.h>
+
+struct UA_NamespaceMapping;
+typedef struct UA_NamespaceMapping UA_NamespaceMapping;
 
 _UA_BEGIN_DECLS
 
@@ -118,16 +122,16 @@ typedef uint64_t UA_UInt64;
  * ^^^^^
  * An IEEE single precision (32 bit) floating point value. */
 typedef float UA_Float;
-#define UA_FLOAT_MIN FLT_MIN;
-#define UA_FLOAT_MAX FLT_MAX;
+#define UA_FLOAT_MIN FLT_MIN
+#define UA_FLOAT_MAX FLT_MAX
 
 /**
  * Double
  * ^^^^^^
  * An IEEE double precision (64 bit) floating point value. */
 typedef double UA_Double;
-#define UA_DOUBLE_MIN DBL_MIN;
-#define UA_DOUBLE_MAX DBL_MAX;
+#define UA_DOUBLE_MIN DBL_MIN
+#define UA_DOUBLE_MAX DBL_MAX
 
 /**
  * .. _statuscode:
@@ -159,20 +163,29 @@ UA_StatusCode_name(UA_StatusCode code);
 
 /* Extracts the severity from a StatusCode. See Part 4, Section 7.34 for
  * details. */
-static UA_INLINE UA_Boolean
-UA_StatusCode_isBad(UA_StatusCode code) {
+UA_INLINABLE(UA_Boolean
+             UA_StatusCode_isBad(UA_StatusCode code), {
     return ((code >> 30) >= 0x02);
-}
+})
 
-static UA_INLINE UA_Boolean
-UA_StatusCode_isUncertain(UA_StatusCode code) {
+UA_INLINABLE(UA_Boolean
+             UA_StatusCode_isUncertain(UA_StatusCode code), {
     return ((code >> 30) == 0x01);
-}
+})
 
-static UA_INLINE UA_Boolean
-UA_StatusCode_isGood(UA_StatusCode code) {
+UA_INLINABLE(UA_Boolean
+             UA_StatusCode_isGood(UA_StatusCode code), {
     return ((code >> 30) == 0x00);
-}
+})
+
+/* Compares the top 16 bits of two StatusCodes for equality. This should only
+ * be used when processing user-defined StatusCodes e.g when processing a ReadResponse.
+ * As a convention, the lower bits of StatusCodes should not be used internally, meaning
+ * can compare them without the use of this function. */
+UA_INLINABLE(UA_Boolean
+             UA_StatusCode_isEqualTop(UA_StatusCode s1, UA_StatusCode s2), {
+    return ((s1 & 0xFFFF0000) == (s2 & 0xFFFF0000));
+})
 
 /**
  * String
@@ -188,10 +201,10 @@ UA_String UA_EXPORT
 UA_String_fromChars(const char *src) UA_FUNC_ATTR_WARN_UNUSED_RESULT;
 
 UA_Boolean UA_EXPORT
-UA_String_equal(const UA_String *s1, const UA_String *s2);
-
-UA_Boolean UA_EXPORT
 UA_String_isEmpty(const UA_String *s);
+
+UA_StatusCode UA_EXPORT
+UA_String_append(UA_String *s, const UA_String s2);
 
 UA_EXPORT extern const UA_String UA_STRING_NULL;
 
@@ -199,18 +212,42 @@ UA_EXPORT extern const UA_String UA_STRING_NULL;
  * ``UA_STRING`` returns a string pointing to the original char-array.
  * ``UA_STRING_ALLOC`` is shorthand for ``UA_String_fromChars`` and makes a copy
  * of the char-array. */
-static UA_INLINE UA_String
-UA_STRING(char *chars) {
-    UA_String s; s.length = 0; s.data = NULL;
+UA_INLINABLE(UA_String
+             UA_STRING(char *chars), {
+    UA_String s;
+    memset(&s, 0, sizeof(s));
     if(!chars)
         return s;
-    s.length = strlen(chars); s.data = (UA_Byte*)chars; return s;
-}
+    s.length = strlen(chars); s.data = (UA_Byte*)chars;
+    return s;
+})
 
 #define UA_STRING_ALLOC(CHARS) UA_String_fromChars(CHARS)
 
 /* Define strings at compile time (in ROM) */
 #define UA_STRING_STATIC(CHARS) {sizeof(CHARS)-1, (UA_Byte*)CHARS}
+
+/* The following methods implement the C standard's printf/vprintf.
+ *
+ * In addition to the format specifiers from the C standard, the following can
+ * be used also:
+ *
+ * - %S - UA_String (not wrapped in quotation marks in the output)
+ * - %N - UA_NodeId (using UA_NodeId_print)
+ *
+ * The output is written to the output string in the first argument. Memory of
+ * sufficient length is allocated when the output string initially has zero
+ * length.
+ *
+ * If the string in the first argument initially has non-zero length, then this
+ * string is used as buffer for encoding and its length is adjusted accordingly.
+ * If the length is too short, then UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED is
+ * reported. Also in that case the string is printed as much as possible. */
+UA_EXPORT UA_StatusCode
+UA_String_printf(UA_String *str, const char *format, ...);
+
+UA_EXPORT UA_StatusCode
+UA_String_vprintf(UA_String *str, const char *format, va_list args);
 
 /**
  * .. _datetime:
@@ -269,15 +306,15 @@ UA_DateTime UA_EXPORT UA_DateTime_fromStruct(UA_DateTimeStruct ts);
 /* Datetime of 1 Jan 1970 00:00 */
 #define UA_DATETIME_UNIX_EPOCH (11644473600LL * UA_DATETIME_SEC)
 
-static UA_INLINE UA_Int64
-UA_DateTime_toUnixTime(UA_DateTime date) {
+UA_INLINABLE(UA_Int64
+             UA_DateTime_toUnixTime(UA_DateTime date), {
     return (date - UA_DATETIME_UNIX_EPOCH) / UA_DATETIME_SEC;
-}
+})
 
-static UA_INLINE UA_DateTime
-UA_DateTime_fromUnixTime(UA_Int64 unixDate) {
+UA_INLINABLE(UA_DateTime
+             UA_DateTime_fromUnixTime(UA_Int64 unixDate), {
     return (unixDate * UA_DATETIME_SEC) + UA_DATETIME_UNIX_EPOCH;
-}
+})
 
 /**
  * Guid
@@ -291,9 +328,6 @@ typedef struct {
 } UA_Guid;
 
 UA_EXPORT extern const UA_Guid UA_GUID_NULL;
-
-UA_Boolean UA_EXPORT
-UA_Guid_equal(const UA_Guid *g1, const UA_Guid *g2);
 
 /* Print a Guid in the human-readable format defined in Part 6, 5.1.3
  *
@@ -311,12 +345,12 @@ UA_Guid_print(const UA_Guid *guid, UA_String *output);
 UA_StatusCode UA_EXPORT
 UA_Guid_parse(UA_Guid *guid, const UA_String str);
 
-static UA_INLINE UA_Guid
-UA_GUID(const char *chars) {
+UA_INLINABLE(UA_Guid
+             UA_GUID(const char *chars), {
     UA_Guid guid;
     UA_Guid_parse(&guid, UA_STRING((char*)(uintptr_t)chars));
     return guid;
-}
+})
 #endif
 
 /**
@@ -335,34 +369,15 @@ UA_ByteString_allocBuffer(UA_ByteString *bs, size_t length);
 /* Converts a ByteString to the corresponding
  * base64 representation */
 UA_StatusCode UA_EXPORT
-UA_ByteString_toBase64(const UA_ByteString *bs,
-                       UA_String *output);
+UA_ByteString_toBase64(const UA_ByteString *bs, UA_String *output);
 
 /* Parse a ByteString from a base64 representation */
 UA_StatusCode UA_EXPORT
 UA_ByteString_fromBase64(UA_ByteString *bs,
                          const UA_String *input);
 
-static UA_INLINE UA_ByteString
-UA_BYTESTRING(char *chars) {
-    UA_ByteString bs; bs.length = 0; bs.data = NULL;
-    if(!chars)
-        return bs;
-    bs.length = strlen(chars); bs.data = (UA_Byte*)chars; return bs;
-}
-
-static UA_INLINE UA_ByteString
-UA_BYTESTRING_ALLOC(const char *chars) {
-    UA_String str = UA_String_fromChars(chars); UA_ByteString bstr;
-    bstr.length = str.length; bstr.data = str.data; return bstr;
-}
-
-static UA_INLINE UA_Boolean
-UA_ByteString_equal(const UA_ByteString *string1,
-                    const UA_ByteString *string2) {
-    return UA_String_equal((const UA_String*)string1,
-                           (const UA_String*)string2);
-}
+#define UA_BYTESTRING(chars) UA_STRING(chars)
+#define UA_BYTESTRING_ALLOC(chars) UA_STRING_ALLOC(chars)
 
 /* Returns a non-cryptographic hash of a bytestring */
 UA_UInt32 UA_EXPORT
@@ -405,8 +420,7 @@ UA_EXPORT extern const UA_NodeId UA_NODEID_NULL;
 
 UA_Boolean UA_EXPORT UA_NodeId_isNull(const UA_NodeId *p);
 
-/* Print the NodeId in the human-readable format defined in Part 6,
- * 5.3.1.10.
+/* Print the NodeId in the human-readable format defined in Part 6.
  *
  * Examples:
  *   UA_NODEID("i=13")
@@ -420,78 +434,127 @@ UA_Boolean UA_EXPORT UA_NodeId_isNull(const UA_NodeId *p);
 UA_StatusCode UA_EXPORT
 UA_NodeId_print(const UA_NodeId *id, UA_String *output);
 
+/* Extended NodeId printing. If nsMapping argument is non-NULL, then the
+ * NamespaceIndex is translated to the NamespaceUri. If that is not successful,
+ * the numerical NamespaceIndex is used instead. See the section on
+ * :ref:`percent-escaping` how NamespaceUris containing semicolons (and
+ * whitespace) are encoded.
+ *
+ * Examples:
+ *   nsu=http://widgets.com/schemas/hello;s=Hello World
+ */
+UA_StatusCode UA_EXPORT
+UA_NodeId_printEx(const UA_NodeId *id, UA_String *output,
+                  const UA_NamespaceMapping *nsMapping);
+
+#ifdef UA_ENABLE_PARSING
 /* Parse the human-readable NodeId format. Attention! String and
  * ByteString NodeIds have their identifier malloc'ed and need to be
  * cleaned up. */
-#ifdef UA_ENABLE_PARSING
 UA_StatusCode UA_EXPORT
 UA_NodeId_parse(UA_NodeId *id, const UA_String str);
 
-static UA_INLINE UA_NodeId
-UA_NODEID(const char *chars) {
+/* Extended parsing that uses the provided namespace mapping to find the
+ * NamespaceIndex for a provided NamespaceUri.
+ *
+ * If the NodeId uses an unknown NamespaceUri, then a String-NodeId is returned
+ * that uses NamespaceIndex 0 and the full original encoding for the string
+ * part.
+ *
+ * Example:
+ *   nsu=my_uri;i=5 => s="nsu=my_uri;i=5" (The quotation marks are for
+ *       illustration purposes and not actually included)
+ */
+UA_StatusCode UA_EXPORT
+UA_NodeId_parseEx(UA_NodeId *id, const UA_String str,
+                  const UA_NamespaceMapping *nsMapping);
+
+UA_INLINABLE(UA_NodeId
+             UA_NODEID(const char *chars), {
     UA_NodeId id;
     UA_NodeId_parse(&id, UA_STRING((char*)(uintptr_t)chars));
     return id;
-}
+})
 #endif
 
-/** The following functions are shorthand for creating NodeIds. */
-static UA_INLINE UA_NodeId
-UA_NODEID_NUMERIC(UA_UInt16 nsIndex, UA_UInt32 identifier) {
-    UA_NodeId id; id.namespaceIndex = nsIndex;
+/** The following methods are a shorthand for creating NodeIds. */
+UA_INLINABLE(UA_NodeId
+             UA_NODEID_NUMERIC(UA_UInt16 nsIndex,
+                               UA_UInt32 identifier), {
+    UA_NodeId id;
+    memset(&id, 0, sizeof(UA_NodeId));
+    id.namespaceIndex = nsIndex;
     id.identifierType = UA_NODEIDTYPE_NUMERIC;
-    id.identifier.numeric = identifier; return id;
-}
+    id.identifier.numeric = identifier;
+    return id;
+})
 
-static UA_INLINE UA_NodeId
-UA_NODEID_STRING(UA_UInt16 nsIndex, char *chars) {
-    UA_NodeId id; id.namespaceIndex = nsIndex;
+/* Shorthand for standard-defined NodeIds in Namespace 0.
+ * See the generated nodeids.h for the full list. */
+#define UA_NS0ID(ID) UA_NODEID_NUMERIC(0, UA_NS0ID_##ID)
+
+UA_INLINABLE(UA_NodeId
+             UA_NODEID_STRING(UA_UInt16 nsIndex, char *chars), {
+    UA_NodeId id;
+    memset(&id, 0, sizeof(UA_NodeId));
+    id.namespaceIndex = nsIndex;
     id.identifierType = UA_NODEIDTYPE_STRING;
-    id.identifier.string = UA_STRING(chars); return id;
-}
+    id.identifier.string = UA_STRING(chars);
+    return id;
+})
 
-static UA_INLINE UA_NodeId
-UA_NODEID_STRING_ALLOC(UA_UInt16 nsIndex, const char *chars) {
-    UA_NodeId id; id.namespaceIndex = nsIndex;
+UA_INLINABLE(UA_NodeId
+             UA_NODEID_STRING_ALLOC(UA_UInt16 nsIndex,
+                                    const char *chars), {
+    UA_NodeId id;
+    memset(&id, 0, sizeof(UA_NodeId));
+    id.namespaceIndex = nsIndex;
     id.identifierType = UA_NODEIDTYPE_STRING;
-    id.identifier.string = UA_STRING_ALLOC(chars); return id;
-}
+    id.identifier.string = UA_STRING_ALLOC(chars);
+    return id;
+})
 
-static UA_INLINE UA_NodeId
-UA_NODEID_GUID(UA_UInt16 nsIndex, UA_Guid guid) {
-    UA_NodeId id; id.namespaceIndex = nsIndex;
+UA_INLINABLE(UA_NodeId
+             UA_NODEID_GUID(UA_UInt16 nsIndex, UA_Guid guid), {
+    UA_NodeId id;
+    memset(&id, 0, sizeof(UA_NodeId));
+    id.namespaceIndex = nsIndex;
     id.identifierType = UA_NODEIDTYPE_GUID;
-    id.identifier.guid = guid; return id;
-}
+    id.identifier.guid = guid;
+    return id;
+})
 
-static UA_INLINE UA_NodeId
-UA_NODEID_BYTESTRING(UA_UInt16 nsIndex, char *chars) {
-    UA_NodeId id; id.namespaceIndex = nsIndex;
+UA_INLINABLE(UA_NodeId
+             UA_NODEID_BYTESTRING(UA_UInt16 nsIndex, char *chars), {
+    UA_NodeId id;
+    memset(&id, 0, sizeof(UA_NodeId));
+    id.namespaceIndex = nsIndex;
     id.identifierType = UA_NODEIDTYPE_BYTESTRING;
-    id.identifier.byteString = UA_BYTESTRING(chars); return id;
-}
+    id.identifier.byteString = UA_BYTESTRING(chars);
+    return id;
+})
 
-static UA_INLINE UA_NodeId
-UA_NODEID_BYTESTRING_ALLOC(UA_UInt16 nsIndex, const char *chars) {
-    UA_NodeId id; id.namespaceIndex = nsIndex;
+UA_INLINABLE(UA_NodeId
+             UA_NODEID_BYTESTRING_ALLOC(UA_UInt16 nsIndex,
+                                        const char *chars), {
+    UA_NodeId id;
+    memset(&id, 0, sizeof(UA_NodeId));
+    id.namespaceIndex = nsIndex;
     id.identifierType = UA_NODEIDTYPE_BYTESTRING;
-    id.identifier.byteString = UA_BYTESTRING_ALLOC(chars); return id;
-}
+    id.identifier.byteString = UA_BYTESTRING_ALLOC(chars);
+    return id;
+})
 
 /* Total ordering of NodeId */
 UA_Order UA_EXPORT
 UA_NodeId_order(const UA_NodeId *n1, const UA_NodeId *n2);
 
-/* Check for equality */
-static UA_INLINE UA_Boolean
-UA_NodeId_equal(const UA_NodeId *n1, const UA_NodeId *n2) {
-    return (UA_NodeId_order(n1, n2) == UA_ORDER_EQ);
-}
-
 /* Returns a non-cryptographic hash for NodeId */
 UA_UInt32 UA_EXPORT UA_NodeId_hash(const UA_NodeId *n);
 
 /**
+ * .. _expandednodeid:
+ *
  * ExpandedNodeId
  * ^^^^^^^^^^^^^^
  * A NodeId that allows the namespace URI to be specified instead of an index. */
@@ -517,62 +580,84 @@ UA_EXPORT extern const UA_ExpandedNodeId UA_EXPANDEDNODEID_NULL;
 UA_StatusCode UA_EXPORT
 UA_ExpandedNodeId_print(const UA_ExpandedNodeId *id, UA_String *output);
 
+/* Extended printing of ExpandedNodeId. It tries to map NamespaceIndex and
+ * ServerIndex to a Uri using the provided mapping.
+ *
+ * Examples:
+ *     svu=http://smith.com/west/factory;nsu=tag:acme.com,2023;i=1234
+ */
+UA_StatusCode UA_EXPORT
+UA_ExpandedNodeId_printEx(const UA_ExpandedNodeId *id, UA_String *output,
+                          const UA_NamespaceMapping *nsMapping,
+                          size_t serverUrisSize, const UA_String *serverUris);
+
+#ifdef UA_ENABLE_PARSING
 /* Parse the human-readable NodeId format. Attention! String and
  * ByteString NodeIds have their identifier malloc'ed and need to be
  * cleaned up. */
-#ifdef UA_ENABLE_PARSING
 UA_StatusCode UA_EXPORT
 UA_ExpandedNodeId_parse(UA_ExpandedNodeId *id, const UA_String str);
 
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID(const char *chars) {
+UA_StatusCode UA_EXPORT
+UA_ExpandedNodeId_parseEx(UA_ExpandedNodeId *id, const UA_String str,
+                          const UA_NamespaceMapping *nsMapping,
+                          size_t serverUrisSize, const UA_String *serverUris);
+
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID(const char *chars), {
     UA_ExpandedNodeId id;
     UA_ExpandedNodeId_parse(&id, UA_STRING((char*)(uintptr_t)chars));
     return id;
-}
+})
 #endif
 
 /** The following functions are shorthand for creating ExpandedNodeIds. */
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID_NUMERIC(UA_UInt16 nsIndex, UA_UInt32 identifier) {
+
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID_NUMERIC(UA_UInt16 nsIndex, UA_UInt32 identifier), {
     UA_ExpandedNodeId id; id.nodeId = UA_NODEID_NUMERIC(nsIndex, identifier);
     id.serverIndex = 0; id.namespaceUri = UA_STRING_NULL; return id;
-}
+})
 
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID_STRING(UA_UInt16 nsIndex, char *chars) {
+/* Shorthand for standard-defined NodeIds in Namespace 0.
+ * See the generated nodeids.h for the full list. */
+#define UA_NS0EXID(ID) UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_##ID)
+
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID_STRING(UA_UInt16 nsIndex, char *chars), {
     UA_ExpandedNodeId id; id.nodeId = UA_NODEID_STRING(nsIndex, chars);
     id.serverIndex = 0; id.namespaceUri = UA_STRING_NULL; return id;
-}
+})
 
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID_STRING_ALLOC(UA_UInt16 nsIndex, const char *chars) {
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID_STRING_ALLOC(UA_UInt16 nsIndex, const char *chars), {
     UA_ExpandedNodeId id; id.nodeId = UA_NODEID_STRING_ALLOC(nsIndex, chars);
     id.serverIndex = 0; id.namespaceUri = UA_STRING_NULL; return id;
-}
+})
 
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID_STRING_GUID(UA_UInt16 nsIndex, UA_Guid guid) {
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID_STRING_GUID(UA_UInt16 nsIndex, UA_Guid guid), {
     UA_ExpandedNodeId id; id.nodeId = UA_NODEID_GUID(nsIndex, guid);
     id.serverIndex = 0; id.namespaceUri = UA_STRING_NULL; return id;
-}
+})
 
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID_BYTESTRING(UA_UInt16 nsIndex, char *chars) {
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID_BYTESTRING(UA_UInt16 nsIndex, char *chars), {
     UA_ExpandedNodeId id; id.nodeId = UA_NODEID_BYTESTRING(nsIndex, chars);
     id.serverIndex = 0; id.namespaceUri = UA_STRING_NULL; return id;
-}
+})
 
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID_BYTESTRING_ALLOC(UA_UInt16 nsIndex, const char *chars) {
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID_BYTESTRING_ALLOC(UA_UInt16 nsIndex, const char *chars), {
     UA_ExpandedNodeId id; id.nodeId = UA_NODEID_BYTESTRING_ALLOC(nsIndex, chars);
     id.serverIndex = 0; id.namespaceUri = UA_STRING_NULL; return id;
-}
+})
 
-static UA_INLINE UA_ExpandedNodeId
-UA_EXPANDEDNODEID_NODEID(UA_NodeId nodeId) {
-    UA_ExpandedNodeId id; memset(&id, 0, sizeof(UA_ExpandedNodeId)); id.nodeId = nodeId; return id;
-}
+UA_INLINABLE(UA_ExpandedNodeId
+             UA_EXPANDEDNODEID_NODEID(UA_NodeId nodeId), {
+    UA_ExpandedNodeId id; memset(&id, 0, sizeof(UA_ExpandedNodeId));
+    id.nodeId = nodeId; return id;
+})
 
 /* Does the ExpandedNodeId point to a local node? That is, are namespaceUri and
  * serverIndex empty? */
@@ -583,13 +668,6 @@ UA_ExpandedNodeId_isLocal(const UA_ExpandedNodeId *n);
 UA_Order UA_EXPORT
 UA_ExpandedNodeId_order(const UA_ExpandedNodeId *n1,
                         const UA_ExpandedNodeId *n2);
-
-/* Check for equality */
-static UA_INLINE UA_Boolean
-UA_ExpandedNodeId_equal(const UA_ExpandedNodeId *n1,
-                        const UA_ExpandedNodeId *n2) {
-    return (UA_ExpandedNodeId_order(n1, n2) == UA_ORDER_EQ);
-}
 
 /* Returns a non-cryptographic hash for ExpandedNodeId. The hash of an
  * ExpandedNodeId is identical to the hash of the embedded (simple) NodeId if
@@ -608,30 +686,66 @@ typedef struct {
     UA_String name;
 } UA_QualifiedName;
 
-static UA_INLINE UA_Boolean
-UA_QualifiedName_isNull(const UA_QualifiedName *q) {
+UA_INLINABLE(UA_Boolean
+             UA_QualifiedName_isNull(const UA_QualifiedName *q), {
     return (q->namespaceIndex == 0 && q->name.length == 0);
-}
+})
 
 /* Returns a non-cryptographic hash for QualifiedName */
 UA_UInt32 UA_EXPORT
 UA_QualifiedName_hash(const UA_QualifiedName *q);
 
-static UA_INLINE UA_QualifiedName
-UA_QUALIFIEDNAME(UA_UInt16 nsIndex, char *chars) {
-    UA_QualifiedName qn; qn.namespaceIndex = nsIndex;
-    qn.name = UA_STRING(chars); return qn;
-}
+UA_INLINABLE(UA_QualifiedName
+             UA_QUALIFIEDNAME(UA_UInt16 nsIndex, char *chars), {
+    UA_QualifiedName qn;
+    qn.namespaceIndex = nsIndex;
+    qn.name = UA_STRING(chars);
+    return qn;
+})
 
-static UA_INLINE UA_QualifiedName
-UA_QUALIFIEDNAME_ALLOC(UA_UInt16 nsIndex, const char *chars) {
-    UA_QualifiedName qn; qn.namespaceIndex = nsIndex;
-    qn.name = UA_STRING_ALLOC(chars); return qn;
-}
+UA_INLINABLE(UA_QualifiedName
+             UA_QUALIFIEDNAME_ALLOC(UA_UInt16 nsIndex, const char *chars), {
+    UA_QualifiedName qn;
+    qn.namespaceIndex = nsIndex;
+    qn.name = UA_STRING_ALLOC(chars);
+    return qn;
+})
 
-UA_Boolean UA_EXPORT
-UA_QualifiedName_equal(const UA_QualifiedName *qn1,
-                       const UA_QualifiedName *qn2);
+/* Print the human-readable QualifiedName format. QualifiedNames can be printed
+ * with either the integer NamespaceIndex or using the NamespaceUri.
+ * The Namespace 0 is always omitted.
+ *
+ * The extended printing tries to translate the NamespaceIndex to the
+ * NamespaceUri from the mapping table. When the mapping fails, the integer
+ * NamespaceIndex from is used.
+ *
+ * Examples:
+ *    Namespace Zero: HelloWorld
+ *    NamespaceIndex Form: 3:HelloWorld
+ *    NamespaceUri Form: nsu=http://widgets.com/schemas/hello;HelloWorld
+ *
+ * The method can either use a pre-allocated string buffer or allocates memory
+ * internally if called with an empty output string. */
+UA_StatusCode UA_EXPORT
+UA_QualifiedName_print(const UA_QualifiedName *qn, UA_String *output);
+
+UA_StatusCode UA_EXPORT
+UA_QualifiedName_printEx(const UA_QualifiedName *qn, UA_String *output,
+                         const UA_NamespaceMapping *nsMapping);
+
+#ifdef UA_ENABLE_PARSING
+/* Parse the human-readable QualifiedName format.
+ *
+ * The extended parsing tries to translate the NamespaceIndex to a NamespaceUri
+ * from the mapping table. When the mapping fails, the name component gets the
+ * entire string. */
+UA_StatusCode UA_EXPORT
+UA_QualifiedName_parse(UA_QualifiedName *qn, const UA_String str);
+
+UA_StatusCode UA_EXPORT
+UA_QualifiedName_parseEx(UA_QualifiedName *qn, const UA_String str,
+                         const UA_NamespaceMapping *nsMapping);
+#endif
 
 /**
  * LocalizedText
@@ -642,24 +756,27 @@ typedef struct {
     UA_String text;
 } UA_LocalizedText;
 
-static UA_INLINE UA_LocalizedText
-UA_LOCALIZEDTEXT(char *locale, char *text) {
-    UA_LocalizedText lt; lt.locale = UA_STRING(locale);
-    lt.text = UA_STRING(text); return lt;
-}
+UA_INLINABLE(UA_LocalizedText
+             UA_LOCALIZEDTEXT(char *locale, char *text), {
+    UA_LocalizedText lt;
+    lt.locale = UA_STRING(locale);
+    lt.text = UA_STRING(text);
+    return lt;
+})
 
-static UA_INLINE UA_LocalizedText
-UA_LOCALIZEDTEXT_ALLOC(const char *locale, const char *text) {
-    UA_LocalizedText lt; lt.locale = UA_STRING_ALLOC(locale);
-    lt.text = UA_STRING_ALLOC(text); return lt;
-}
+UA_INLINABLE(UA_LocalizedText
+             UA_LOCALIZEDTEXT_ALLOC(const char *locale, const char *text), {
+    UA_LocalizedText lt;
+    lt.locale = UA_STRING_ALLOC(locale);
+    lt.text = UA_STRING_ALLOC(text);
+    return lt;
+})
 
 /**
  * .. _numericrange:
  *
  * NumericRange
  * ^^^^^^^^^^^^
- *
  * NumericRanges are used to indicate subsets of a (multidimensional) array.
  * They no official data type in the OPC UA standard and are transmitted only
  * with a string encoding, such as "1:2,0:3,5". The colon separates min/max
@@ -678,11 +795,13 @@ typedef struct  {
 UA_StatusCode UA_EXPORT
 UA_NumericRange_parse(UA_NumericRange *range, const UA_String str);
 
-static UA_INLINE UA_NumericRange
-UA_NUMERICRANGE(const char *s) {
-    UA_NumericRange nr; nr.dimensionsSize = 0; nr.dimensions = NULL;
-    UA_NumericRange_parse(&nr, UA_STRING((char*)(uintptr_t)s)); return nr;
-}
+UA_INLINABLE(UA_NumericRange
+             UA_NUMERICRANGE(const char *s), {
+    UA_NumericRange nr;
+    memset(&nr, 0, sizeof(nr)); 
+    UA_NumericRange_parse(&nr, UA_STRING((char*)(uintptr_t)s));
+    return nr;
+})
 
 /**
  * .. _variant:
@@ -745,40 +864,42 @@ typedef struct {
  *
  * @param v The variant
  * @return Is the variant empty */
-static UA_INLINE UA_Boolean
-UA_Variant_isEmpty(const UA_Variant *v) {
+UA_INLINABLE(UA_Boolean
+             UA_Variant_isEmpty(const UA_Variant *v), {
     return v->type == NULL;
-}
+})
 
 /* Returns true if the variant contains a scalar value. Note that empty variants
  * contain an array of length -1 (undefined).
  *
  * @param v The variant
  * @return Does the variant contain a scalar value */
-static UA_INLINE UA_Boolean
-UA_Variant_isScalar(const UA_Variant *v) {
+UA_INLINABLE(UA_Boolean
+             UA_Variant_isScalar(const UA_Variant *v), {
     return (v->arrayLength == 0 && v->data > UA_EMPTY_ARRAY_SENTINEL);
-}
+})
 
 /* Returns true if the variant contains a scalar value of the given type.
  *
  * @param v The variant
  * @param type The data type
  * @return Does the variant contain a scalar value of the given type */
-static UA_INLINE UA_Boolean
-UA_Variant_hasScalarType(const UA_Variant *v, const UA_DataType *type) {
+UA_INLINABLE(UA_Boolean
+             UA_Variant_hasScalarType(const UA_Variant *v,
+                                      const UA_DataType *type), {
     return UA_Variant_isScalar(v) && type == v->type;
-}
+})
 
 /* Returns true if the variant contains an array of the given type.
  *
  * @param v The variant
  * @param type The data type
  * @return Does the variant contain an array of the given type */
-static UA_INLINE UA_Boolean
-UA_Variant_hasArrayType(const UA_Variant *v, const UA_DataType *type) {
+UA_INLINABLE(UA_Boolean
+             UA_Variant_hasArrayType(const UA_Variant *v,
+                                     const UA_DataType *type), {
     return (!UA_Variant_isScalar(v)) && type == v->type;
-}
+})
 
 /* Set the variant to a scalar value that already resides in memory. The value
  * takes on the lifecycle of the variant and is deleted with it.
@@ -993,6 +1114,9 @@ typedef struct UA_DiagnosticInfo {
  *   of the data type and perform a ``T_init`` to reset the type.
  * - ``void T_delete(T *ptr)``: Delete the content of the data type and the
  *   memory for the data type itself.
+ * - ``void T_equal(T *p1, T *p2)``: Compare whether ``p1`` and ``p2`` have
+ *   identical content. You can use ``UA_order`` if an absolute ordering
+ *   is required.
  *
  * Specializations, such as ``UA_Int32_new()`` are derived from the generic
  * type operations as static inline functions. */
@@ -1074,6 +1198,9 @@ typedef struct UA_DataTypeArray {
     const struct UA_DataTypeArray *next;
     const size_t typesSize;
     const UA_DataType *types;
+    UA_Boolean cleanup; /* Free the array structure and its content
+                           when the client or server configuration
+                           containing it is cleaned up */
 } UA_DataTypeArray;
 
 /* Returns the offset and type of a structure member. The return value is false
@@ -1082,7 +1209,7 @@ typedef struct UA_DataTypeArray {
  * If the member is an array, the offset points to the (size_t) length field.
  * (The array pointer comes after the length field without any padding.) */
 #ifdef UA_ENABLE_TYPEDESCRIPTION
-UA_Boolean
+UA_Boolean UA_EXPORT
 UA_DataType_getStructMember(const UA_DataType *type,
                             const char *memberName,
                             size_t *outOffset,
@@ -1093,7 +1220,7 @@ UA_DataType_getStructMember(const UA_DataType *type,
 /* Test if the data type is a numeric builtin data type (via the typeKind field
  * of UA_DataType). This includes integers and floating point numbers. Not
  * included are Boolean, DateTime, StatusCode and Enums. */
-UA_Boolean
+UA_Boolean UA_EXPORT
 UA_DataType_isNumeric(const UA_DataType *type);
 
 /**
@@ -1105,6 +1232,13 @@ UA_DataType_isNumeric(const UA_DataType *type);
  * matching data type was found. */
 const UA_DataType UA_EXPORT *
 UA_findDataType(const UA_NodeId *typeId);
+
+/*
+ * Add custom data types to the search scope of UA_findDataType. */
+
+const UA_DataType UA_EXPORT *
+UA_findDataTypeWithCustom(const UA_NodeId *typeId,
+                          const UA_DataTypeArray *customTypes);
 
 /** The following functions are used for generic handling of data types. */
 
@@ -1119,10 +1253,10 @@ void UA_EXPORT * UA_new(const UA_DataType *type) UA_FUNC_ATTR_MALLOC;
  *
  * @param p The memory location of the variable
  * @param type The datatype description */
-static UA_INLINE void
-UA_init(void *p, const UA_DataType *type) {
+UA_INLINABLE(void
+             UA_init(void *p, const UA_DataType *type), {
     memset(p, 0, type->memSize);
-}
+})
 
 /* Copies the content of two variables. If copying fails (e.g. because no memory
  * was available for an array), then dst is emptied and initialized to prevent
@@ -1135,16 +1269,13 @@ UA_init(void *p, const UA_DataType *type) {
 UA_StatusCode UA_EXPORT
 UA_copy(const void *src, void *dst, const UA_DataType *type);
 
-/* Deletes the dynamically allocated content of a variable (e.g. resets all
- * arrays to undefined arrays). Afterwards, the variable can be safely deleted
- * without causing memory leaks. But the variable is not initialized and may
- * contain old data that is not memory-relevant.
+/* Deletes the dynamically allocated content of a variable (e.g. deallocates all
+ * arrays in the variable). Also initializes the variable to default values.
+ * Afterwards, the variable can be safely deleted without causing memory leaks.
  *
  * @param p The memory location of the variable
  * @param type The datatype description of the variable */
 void UA_EXPORT UA_clear(void *p, const UA_DataType *type);
-
-#define UA_deleteMembers(p, type) UA_clear(p, type)
 
 /* Frees a variable and all of its content.
  *
@@ -1168,8 +1299,7 @@ UA_StatusCode UA_EXPORT
 UA_print(const void *p, const UA_DataType *type, UA_String *output);
 #endif
 
-/* Compare two variables and return their order. This can also be used to test
- * for equality of two values.
+/* Compare two values and return their order.
  *
  * For numerical types (including StatusCodes and Enums), their natural order is
  * used. NaN is the "smallest" value for floating point values. Different bit
@@ -1191,6 +1321,72 @@ UA_print(const void *p, const UA_DataType *type, UA_String *output);
 UA_Order UA_EXPORT
 UA_order(const void *p1, const void *p2, const UA_DataType *type);
 
+/* Compare if two values have identical content. */
+UA_INLINABLE(UA_Boolean
+             UA_equal(const void *p1, const void *p2, const UA_DataType *type), {
+    return (UA_order(p1, p2, type) == UA_ORDER_EQ);
+})
+
+/**
+ * Namespace Mapping
+ * -----------------
+ *
+ * Every :ref:`nodeid` references a namespace index. Actually the namespace is
+ * identified by its URI. The namespace-array of the server maps the URI to the
+ * namespace index in the array. Namespace zero always has the URI
+ * ```http://opcfoundation.org/UA/```. Namespace one has the application URI of
+ * the server. All namespaces beyond get a custom assignment.
+ *
+ * In order to have predictable NodeIds, a client might predefined its own
+ * namespace array that is different from the server's. When a NodeId is decoded
+ * from a network message (binary or JSON), a mapping-table can be used to
+ * automatically translate between the remote and local namespace index. The
+ * mapping is typically done by the client who can generate the mapping table
+ * after reading the namespace-array of the server. The reverse mapping is done
+ * in the encoding if the mapping table is set in the options.
+ *
+ * The mapping table also contains the full URI names. It is also used to
+ * translate the ``NamespaceUri`` field of an ExpandedNodeId into the namespace
+ * index of the NodeId embedded in the ExpandedNodeId. */
+
+struct UA_NamespaceMapping {
+    /* Namespaces with their local index */
+    UA_String *namespaceUris;
+    size_t namespaceUrisSize;
+
+    /* Map from local to remote indices */
+    UA_UInt16 *local2remote;
+    size_t local2remoteSize;
+
+    /* Map from remote to local indices */
+    UA_UInt16 *remote2local;
+    size_t remote2localSize;
+};
+
+/* If the index is unknown, returns (UINT16_MAX - index) */
+UA_UInt16
+UA_NamespaceMapping_local2Remote(const UA_NamespaceMapping *nm,
+                                 UA_UInt16 localIndex);
+
+UA_UInt16
+UA_NamespaceMapping_remote2Local(const UA_NamespaceMapping *nm,
+                                 UA_UInt16 remoteIndex);
+
+/* Returns an error if the namespace uri was not found.
+ * The pointer to the index argument needs to be non-NULL. */
+UA_StatusCode
+UA_NamespaceMapping_uri2Index(const UA_NamespaceMapping *nm,
+                              UA_String uri, UA_UInt16 *index);
+
+/* Upon success, the uri string gets set. The string is not copied and must not
+ * outlive the namespace mapping structure. */
+UA_StatusCode
+UA_NamespaceMapping_index2Uri(const UA_NamespaceMapping *nm,
+                              UA_UInt16 index, UA_String *uri);
+
+void
+UA_NamespaceMapping_delete(UA_NamespaceMapping *nm);
+
 /**
  * Binary Encoding/Decoding
  * ------------------------
@@ -1198,10 +1394,17 @@ UA_order(const void *p1, const void *p2, const UA_DataType *type);
  * Encoding and decoding routines for the binary format. For the binary decoding
  * additional data types can be forwarded. */
 
+typedef struct {
+    /* Mapping of namespace indices in NodeIds and of NamespaceUris in
+     * ExpandedNodeIds. */
+    UA_NamespaceMapping *namespaceMapping;
+} UA_EncodeBinaryOptions;
+
 /* Returns the number of bytes the value p takes in binary encoding. Returns
  * zero if an error occurs. */
 UA_EXPORT size_t
-UA_calcSizeBinary(const void *p, const UA_DataType *type);
+UA_calcSizeBinary(const void *p, const UA_DataType *type,
+                  UA_EncodeBinaryOptions *options);
 
 /* Encodes a data-structure in the binary format. If outBuf has a length of
  * zero, a buffer of the required size is allocated. Otherwise, encoding into
@@ -1209,14 +1412,23 @@ UA_calcSizeBinary(const void *p, const UA_DataType *type);
  * small). */
 UA_EXPORT UA_StatusCode
 UA_encodeBinary(const void *p, const UA_DataType *type,
-                UA_ByteString *outBuf);
+                UA_ByteString *outBuf, UA_EncodeBinaryOptions *options);
 
 /* The structure with the decoding options may be extended in the future.
  * Zero-out the entire structure initially to ensure code-compatibility when
  * more fields are added in a later release. */
 typedef struct {
-    const UA_DataTypeArray *customTypes; /* Begin of a linked list with custom
-                                          * datatype definitions */
+    /* Begin of a linked list with custom datatype definitions */
+    const UA_DataTypeArray *customTypes;
+
+    /* Mapping of namespace indices in NodeIds and of NamespaceUris in
+     * ExpandedNodeIds. */
+    UA_NamespaceMapping *namespaceMapping;
+
+    /* Override calloc for arena-based memory allocation. Note that allocated
+     * memory is not freed if decoding fails afterwards. */
+    void *callocContext;
+    void * (*calloc)(void *callocContext, size_t nelem, size_t elsize);
 } UA_DecodeBinaryOptions;
 
 /* Decodes a data structure from the input buffer in the binary format. It is
@@ -1251,8 +1463,10 @@ UA_decodeBinary(const UA_ByteString *inBuf,
 #ifdef UA_ENABLE_JSON_ENCODING
 
 typedef struct {
-    const UA_String *namespaces;
-    size_t namespacesSize;
+    /* Mapping of namespace indices in NodeIds and of NamespaceUris in
+     * ExpandedNodeIds. */
+    UA_NamespaceMapping *namespaceMapping;
+
     const UA_String *serverUris;
     size_t serverUrisSize;
     UA_Boolean useReversible;
@@ -1288,12 +1502,20 @@ UA_encodeJson(const void *src, const UA_DataType *type, UA_ByteString *outBuf,
  * Zero-out the entire structure initially to ensure code-compatibility when
  * more fields are added in a later release. */
 typedef struct {
-    const UA_String *namespaces;
-    size_t namespacesSize;
+    /* Mapping of namespace indices in NodeIds and of NamespaceUris in
+     * ExpandedNodeIds. */
+    UA_NamespaceMapping *namespaceMapping;
+
     const UA_String *serverUris;
     size_t serverUrisSize;
+
     const UA_DataTypeArray *customTypes; /* Begin of a linked list with custom
                                           * datatype definitions */
+
+    size_t *decodedLength; /* If non-NULL, the length of the decoded input is
+                            * stored to the pointer. When this is set, decoding
+                            * succeeds also if there is more content after the
+                            * first JSON element in the input string. */
 } UA_DecodeJsonOptions;
 
 /* Decodes a scalar value described by type from json encoding.
@@ -1304,13 +1526,72 @@ typedef struct {
  *        decoding fails, members are deleted and the value is reset (zeroed)
  *        again.
  * @param type The value type. Must not be NULL.
- * @param options The options struct for decoding, currently unused
+ * @param options The options struct for decoding.
  * @return Returns a statuscode whether decoding succeeded. */
 UA_StatusCode UA_EXPORT
 UA_decodeJson(const UA_ByteString *src, void *dst, const UA_DataType *type,
               const UA_DecodeJsonOptions *options);
 
 #endif /* UA_ENABLE_JSON_ENCODING */
+
+/**
+ * XML En/Decoding
+ * ----------------
+ *
+ * The XML decoding can parse the official encoding from the OPC UA
+ * specification.
+ *
+ * These extensions are not intended to be used for the OPC UA protocol on the
+ * network. They were rather added to allow more convenient configuration file
+ * formats that also include data in the OPC UA type system.
+ */
+
+#ifdef UA_ENABLE_XML_ENCODING
+
+typedef struct {
+    UA_Boolean prettyPrint;   /* Add newlines and spaces for legibility */
+} UA_EncodeXmlOptions;
+
+/* Returns the number of bytes the value src takes in xml encoding. Returns
+ * zero if an error occurs. */
+UA_EXPORT size_t
+UA_calcSizeXml(const void *src, const UA_DataType *type,
+               const UA_EncodeXmlOptions *options);
+
+/* Encodes the scalar value described by type to xml encoding.
+ *
+ * @param src The value. Must not be NULL.
+ * @param type The value type. Must not be NULL.
+ * @param outBuf Pointer to ByteString containing the result if the encoding
+ *        was successful
+ * @return Returns a statuscode whether encoding succeeded. */
+UA_StatusCode UA_EXPORT
+UA_encodeXml(const void *src, const UA_DataType *type, UA_ByteString *outBuf,
+             const UA_EncodeXmlOptions *options);
+
+/* The structure with the decoding options may be extended in the future.
+ * Zero-out the entire structure initially to ensure code-compatibility when
+ * more fields are added in a later release. */
+typedef struct {
+    const UA_DataTypeArray *customTypes; /* Begin of a linked list with custom
+                                          * datatype definitions */
+} UA_DecodeXmlOptions;
+
+/* Decodes a scalar value described by type from xml encoding.
+ *
+ * @param src The buffer with the xml encoded value. Must not be NULL.
+ * @param dst The target value. Must not be NULL. The target is assumed to have
+ *        size type->memSize. The value is reset to zero before decoding. If
+ *        decoding fails, members are deleted and the value is reset (zeroed)
+ *        again.
+ * @param type The value type. Must not be NULL.
+ * @param options The options struct for decoding, currently unused
+ * @return Returns a statuscode whether decoding succeeded. */
+UA_StatusCode UA_EXPORT
+UA_decodeXml(const UA_ByteString *src, void *dst, const UA_DataType *type,
+             const UA_DecodeXmlOptions *options);
+
+#endif /* UA_ENABLE_XML_ENCODING */
 
 /**
  * .. _array-handling:
@@ -1398,34 +1679,28 @@ void UA_EXPORT
 UA_Array_delete(void *p, size_t size, const UA_DataType *type);
 
 /**
- * Random Number Generator
- * -----------------------
- * If UA_MULTITHREADING is defined, then the seed is stored in thread
- * local storage. The seed is initialized for every thread in the
- * server/client. */
-void UA_EXPORT UA_random_seed(UA_UInt64 seed);
-UA_UInt32 UA_EXPORT UA_UInt32_random(void); /* no cryptographic entropy */
-UA_Guid UA_EXPORT UA_Guid_random(void);     /* no cryptographic entropy */
-
-/**
  * .. _generated-types:
  *
  * Generated Data Type Definitions
  * -------------------------------
  *
- * The following data types were auto-generated from a definition in XML format.
- */
+ * The following standard-defined datatypes are auto-generated from XML files
+ * that are part of the OPC UA standard. All datatypes are built up from the 25
+ * builtin-in datatypes from the :ref:`types` section.
+ *
+ * .. include:: types_generated.rst */
 
-/* The following is used to exclude type names in the definition of UA_DataType
- * structures if the feature is disabled. */
+/* stop-doc-generation */
+
+/* Helper used to exclude type names in the definition of UA_DataType structures
+ * if the feature is disabled. */
 #ifdef UA_ENABLE_TYPEDESCRIPTION
 # define UA_TYPENAME(name) name,
 #else
 # define UA_TYPENAME(name)
 #endif
 
-/**
- * .. include:: types_generated.rst */
+#include <open62541/types_generated.h>
 
 _UA_END_DECLS
 

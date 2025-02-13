@@ -21,22 +21,24 @@ UA_Server_findDataType(UA_Server *server, const UA_NodeId *typeId) {
 /* Information Model Operations */
 /********************************/
 
+static void *
+returnFirstType(void *context, UA_ReferenceTarget *t) {
+    UA_Server *server = (UA_Server*)context;
+    /* Don't release the node that is returned.
+     * Continues to iterate if NULL is returned. */
+    return (void*)(uintptr_t)UA_NODESTORE_GETFROMREF(server, t->targetId);
+}
+
 const UA_Node *
 getNodeType(UA_Server *server, const UA_NodeHead *head) {
     /* The reference to the parent is different for variable and variabletype */
     UA_Byte parentRefIndex;
     UA_Boolean inverse;
-    UA_NodeClass typeNodeClass;
     switch(head->nodeClass) {
     case UA_NODECLASS_OBJECT:
-        parentRefIndex = UA_REFERENCETYPEINDEX_HASTYPEDEFINITION;
-        inverse = false;
-        typeNodeClass = UA_NODECLASS_OBJECTTYPE;
-        break;
     case UA_NODECLASS_VARIABLE:
         parentRefIndex = UA_REFERENCETYPEINDEX_HASTYPEDEFINITION;
         inverse = false;
-        typeNodeClass = UA_NODECLASS_VARIABLETYPE;
         break;
     case UA_NODECLASS_OBJECTTYPE:
     case UA_NODECLASS_VARIABLETYPE:
@@ -44,7 +46,6 @@ getNodeType(UA_Server *server, const UA_NodeHead *head) {
     case UA_NODECLASS_DATATYPE:
         parentRefIndex = UA_REFERENCETYPEINDEX_HASSUBTYPE;
         inverse = true;
-        typeNodeClass = head->nodeClass;
         break;
     default:
         return NULL;
@@ -57,16 +58,10 @@ getNodeType(UA_Server *server, const UA_NodeHead *head) {
             continue;
         if(rk->referenceTypeIndex != parentRefIndex)
             continue;
-
-        const UA_ReferenceTarget *t = NULL;
-        while((t = UA_NodeReferenceKind_iterate(rk, t))) {
-            const UA_Node *type = UA_NODESTORE_GETFROMREF(server, t->targetId);
-            if(!type)
-                continue;
-            if(type->head.nodeClass == typeNodeClass)
-                return type; /* Don't release the node that is returned */
-            UA_NODESTORE_RELEASE(server, type);
-        }
+        const UA_Node *type = (const UA_Node*)
+            UA_NodeReferenceKind_iterate(rk, returnFirstType, server);
+        if(type)
+            return type;
     }
 
     return NULL;
@@ -268,41 +263,20 @@ getAllInterfaceChildNodeIds(UA_Server *server, const UA_NodeId *objectNode,
     return UA_STATUSCODE_GOOD;
 }
 
-/* For mulithreading: make a copy of the node, edit and replace.
- * For singlethreading: edit the original */
+/* Get the node, make the changes and release */
 UA_StatusCode
-UA_Server_editNode(UA_Server *server, UA_Session *session,
-                   const UA_NodeId *nodeId, UA_EditNodeCallback callback,
-                   void *data) {
-#ifndef UA_ENABLE_IMMUTABLE_NODES
-    /* Get the node and process it in-situ */
-    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
+UA_Server_editNode(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
+                   UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
+                   UA_BrowseDirection referenceDirections,
+                   UA_EditNodeCallback callback, void *data) {
+    UA_Node *node =
+        UA_NODESTORE_GET_EDIT_SELECTIVE(server, nodeId, attributeMask,
+                                        references, referenceDirections);
     if(!node)
         return UA_STATUSCODE_BADNODEIDUNKNOWN;
-    UA_StatusCode retval = callback(server, session, (UA_Node*)(uintptr_t)node, data);
+    UA_StatusCode retval = callback(server, session, node, data);
     UA_NODESTORE_RELEASE(server, node);
     return retval;
-#else
-    UA_StatusCode retval;
-    do {
-        /* Get an editable copy of the node */
-        UA_Node *node;
-        retval = UA_NODESTORE_GETCOPY(server, nodeId, &node);
-        if(retval != UA_STATUSCODE_GOOD)
-            return retval;
-
-        /* Run the operation on the copy */
-        retval = callback(server, session, node, data);
-        if(retval != UA_STATUSCODE_GOOD) {
-            UA_NODESTORE_DELETE(server, node);
-            return retval;
-        }
-
-        /* Replace the node */
-        retval = UA_NODESTORE_REPLACE(server, node);
-    } while(retval != UA_STATUSCODE_GOOD);
-    return retval;
-#endif
 }
 
 UA_StatusCode
@@ -361,7 +335,10 @@ const UA_VariableAttributes UA_VariableAttributes_default = {
      {UA_NS0ID_BASEDATATYPE}},   /* dataType */
     UA_VALUERANK_ANY,            /* valueRank */
     0, NULL,                     /* arrayDimensions */
-    UA_ACCESSLEVELMASK_READ, 0,  /* accessLevel (userAccessLevel) */
+    UA_ACCESSLEVELMASK_READ |    /* accessLevel */
+    UA_ACCESSLEVELMASK_STATUSWRITE |
+    UA_ACCESSLEVELMASK_TIMESTAMPWRITE,
+    0,                           /* userAccessLevel */
     0.0,                         /* minimumSamplingInterval */
     false                        /* historizing */
 };

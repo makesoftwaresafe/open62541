@@ -42,14 +42,13 @@
 
 #include <open62541/plugin/log_stdout.h>
 #include <open62541/server.h>
-#include <open62541/server_config_default.h>
+#include <open62541/plugin/securitypolicy_default.h>
 
-#include <signal.h>
-
-#include <open62541/plugin/pubsub_mqtt.h>
+#include <stdio.h>
 
 #define CONNECTION_NAME              "MQTT Publisher Connection"
-#define TRANSPORT_PROFILE_URI        "http://opcfoundation.org/UA-Profile/Transport/pubsub-mqtt"
+#define TRANSPORT_PROFILE_URI_UADP   "http://opcfoundation.org/UA-Profile/Transport/pubsub-mqtt-uadp"
+#define TRANSPORT_PROFILE_URI_JSON   "http://opcfoundation.org/UA-Profile/Transport/pubsub-mqtt-json"
 #define MQTT_CLIENT_ID               "TESTCLIENTPUBSUBMQTT"
 #define CONNECTIONOPTION_NAME        "mqttClientId"
 #define PUBLISHER_TOPIC              "customTopic"
@@ -79,11 +78,17 @@
 #define CA_FILE_PATH                    "/path/to/server.cert"
 #endif
 
-#ifdef UA_ENABLE_JSON_ENCODING
-static UA_Boolean useJson = true;
-#else
-static UA_Boolean useJson = false;
+#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && !defined(UA_ENABLE_JSON_ENCODING)
+#define UA_AES128CTR_SIGNING_KEY_LENGTH 32
+#define UA_AES128CTR_KEY_LENGTH 16
+#define UA_AES128CTR_KEYNONCE_LENGTH 4
+
+UA_Byte signingKey[UA_AES128CTR_SIGNING_KEY_LENGTH] = {0};
+UA_Byte encryptingKey[UA_AES128CTR_KEY_LENGTH] = {0};
+UA_Byte keyNonce[UA_AES128CTR_KEYNONCE_LENGTH] = {0};
 #endif
+
+static UA_Boolean useJson = false;
 
 static UA_NodeId connectionIdent;
 static UA_NodeId publishedDataSetIdent;
@@ -96,8 +101,11 @@ addPubSubConnection(UA_Server *server, char *addressUrl) {
     UA_PubSubConnectionConfig connectionConfig;
     memset(&connectionConfig, 0, sizeof(connectionConfig));
     connectionConfig.name = UA_STRING(CONNECTION_NAME);
-    connectionConfig.transportProfileUri = UA_STRING(TRANSPORT_PROFILE_URI);
-    connectionConfig.enabled = UA_TRUE;
+    if(useJson) {
+        connectionConfig.transportProfileUri = UA_STRING(TRANSPORT_PROFILE_URI_JSON);
+    } else {
+        connectionConfig.transportProfileUri = UA_STRING(TRANSPORT_PROFILE_URI_UADP);
+    }
 
     /* configure address of the mqtt broker (local on default port) */
     UA_NetworkAddressUrlDataType networkAddressUrl = {UA_STRING_NULL , UA_STRING(addressUrl)};
@@ -105,48 +113,45 @@ addPubSubConnection(UA_Server *server, char *addressUrl) {
                          &UA_TYPES[UA_TYPES_NETWORKADDRESSURLDATATYPE]);
     /* Changed to static publisherId from random generation to identify
      * the publisher on Subscriber side */
-    connectionConfig.publisherIdType = UA_PUBLISHERIDTYPE_UINT16;
-    connectionConfig.publisherId.uint16 = 2234;
+    connectionConfig.publisherId.idType = UA_PUBLISHERIDTYPE_UINT16;
+    connectionConfig.publisherId.id.uint16 = 2234;
 
     /* configure options, set mqtt client id */
-    const int connectionOptionsCount = 1
-#ifdef EXAMPLE_USE_MQTT_LOGIN
-    + LOGIN_OPTION_COUNT
-#endif
-#ifdef EXAMPLE_USE_MQTT_TLS
-    + TLS_OPTION_COUNT
-#endif
-    ;
+/* #ifdef EXAMPLE_USE_MQTT_LOGIN */
+/*     + LOGIN_OPTION_COUNT */
+/* #endif */
+/* #ifdef EXAMPLE_USE_MQTT_TLS */
+/*     + TLS_OPTION_COUNT */
+/* #endif */
 
-    UA_KeyValuePair connectionOptions[connectionOptionsCount];
+    UA_KeyValuePair connectionOptions[1];
 
-    size_t connectionOptionIndex = 0;
-    connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, CONNECTIONOPTION_NAME);
     UA_String mqttClientId = UA_STRING(MQTT_CLIENT_ID);
-    UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttClientId, &UA_TYPES[UA_TYPES_STRING]);
+    connectionOptions[0].key = UA_QUALIFIEDNAME(0, CONNECTIONOPTION_NAME);
+    UA_Variant_setScalar(&connectionOptions[0].value, &mqttClientId, &UA_TYPES[UA_TYPES_STRING]);
 
-#ifdef EXAMPLE_USE_MQTT_LOGIN
-    connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, USERNAME_OPTION_NAME);
-    UA_String mqttUsername = UA_STRING(MQTT_USERNAME);
-    UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttUsername, &UA_TYPES[UA_TYPES_STRING]);
+/* #ifdef EXAMPLE_USE_MQTT_LOGIN */
+/*     connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, USERNAME_OPTION_NAME); */
+/*     UA_String mqttUsername = UA_STRING(MQTT_USERNAME); */
+/*     UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttUsername, &UA_TYPES[UA_TYPES_STRING]); */
 
-    connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, PASSWORD_OPTION_NAME);
-    UA_String mqttPassword = UA_STRING(MQTT_PASSWORD);
-    UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttPassword, &UA_TYPES[UA_TYPES_STRING]);
-#endif
+/*     connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, PASSWORD_OPTION_NAME); */
+/*     UA_String mqttPassword = UA_STRING(MQTT_PASSWORD); */
+/*     UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttPassword, &UA_TYPES[UA_TYPES_STRING]); */
+/* #endif */
 
-#ifdef EXAMPLE_USE_MQTT_TLS
-    connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, USE_TLS_OPTION_NAME);
-    UA_Boolean mqttUseTLS = true;
-    UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttUseTLS, &UA_TYPES[UA_TYPES_BOOLEAN]);
+/* #ifdef EXAMPLE_USE_MQTT_TLS */
+/*     connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, USE_TLS_OPTION_NAME); */
+/*     UA_Boolean mqttUseTLS = true; */
+/*     UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttUseTLS, &UA_TYPES[UA_TYPES_BOOLEAN]); */
 
-    connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, MQTT_CA_FILE_PATH_OPTION_NAME);
-    UA_String mqttCaFile = UA_STRING(CA_FILE_PATH);
-    UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttCaFile, &UA_TYPES[UA_TYPES_STRING]);
-#endif
+/*     connectionOptions[connectionOptionIndex].key = UA_QUALIFIEDNAME(0, MQTT_CA_FILE_PATH_OPTION_NAME); */
+/*     UA_String mqttCaFile = UA_STRING(CA_FILE_PATH); */
+/*     UA_Variant_setScalar(&connectionOptions[connectionOptionIndex++].value, &mqttCaFile, &UA_TYPES[UA_TYPES_STRING]); */
+/* #endif */
 
-    connectionConfig.connectionProperties = connectionOptions;
-    connectionConfig.connectionPropertiesSize = connectionOptionIndex;
+    connectionConfig.connectionProperties.map = connectionOptions;
+    connectionConfig.connectionProperties.mapSize = 1;
 
     UA_Server_addPubSubConnection(server, &connectionConfig, &connectionIdent);
 }
@@ -184,7 +189,7 @@ addDataSetField(UA_Server *server) {
     dataSetFieldConfig.field.variable.fieldNameAlias = UA_STRING("Server localtime");
     dataSetFieldConfig.field.variable.promotedField = UA_FALSE;
     dataSetFieldConfig.field.variable.publishParameters.publishedVariable =
-        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME);
+        UA_NS0ID(SERVER_SERVERSTATUS_CURRENTTIME);
     dataSetFieldConfig.field.variable.publishParameters.attributeId = UA_ATTRIBUTEID_VALUE;
     UA_Server_addDataSetField(server, publishedDataSetIdent, &dataSetFieldConfig, NULL);
 }
@@ -194,15 +199,13 @@ addDataSetField(UA_Server *server) {
  * The WriterGroup (WG) is part of the connection and contains the primary configuration
  * parameters for the message creation.
  */
-static UA_StatusCode
+static void
 addWriterGroup(UA_Server *server, char *topic, int interval) {
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
     /* Now we create a new WriterGroupConfig and add the group to the existing PubSubConnection. */
     UA_WriterGroupConfig writerGroupConfig;
     memset(&writerGroupConfig, 0, sizeof(UA_WriterGroupConfig));
     writerGroupConfig.name = UA_STRING("Demo WriterGroup");
     writerGroupConfig.publishingInterval = interval;
-    writerGroupConfig.enabled = UA_FALSE;
     writerGroupConfig.writerGroupId = 100;
     UA_UadpWriterGroupMessageDataType *writerGroupMessage;
 
@@ -212,9 +215,10 @@ addWriterGroup(UA_Server *server, char *topic, int interval) {
 
     if(useJson) {
         writerGroupConfig.encodingMimeType = UA_PUBSUB_ENCODING_JSON;
-        writerGroupConfig.messageSettings.encoding             = UA_EXTENSIONOBJECT_DECODED;
-
-        writerGroupConfig.messageSettings.content.decoded.type = &UA_TYPES[UA_TYPES_JSONWRITERGROUPMESSAGEDATATYPE];
+        writerGroupConfig.messageSettings.encoding =
+            UA_EXTENSIONOBJECT_DECODED;
+        writerGroupConfig.messageSettings.content.decoded.type =
+            &UA_TYPES[UA_TYPES_JSONWRITERGROUPMESSAGEDATATYPE];
         /* The configuration flags for the messages are encapsulated inside the
          * message- and transport settings extension objects. These extension
          * objects are defined by the standard. e.g.
@@ -231,13 +235,13 @@ addWriterGroup(UA_Server *server, char *topic, int interval) {
             (UA_JsonNetworkMessageContentMask)UA_JSONNETWORKMESSAGECONTENTMASK_DATASETCLASSID);
         writerGroupConfig.messageSettings.content.decoded.data = Json_writerGroupMessage;
     }
-
     else
 #endif
     {
         writerGroupConfig.encodingMimeType = UA_PUBSUB_ENCODING_UADP;
-        writerGroupConfig.messageSettings.encoding             = UA_EXTENSIONOBJECT_DECODED;
-        writerGroupConfig.messageSettings.content.decoded.type = &UA_TYPES[UA_TYPES_UADPWRITERGROUPMESSAGEDATATYPE];
+        writerGroupConfig.messageSettings.encoding = UA_EXTENSIONOBJECT_DECODED;
+        writerGroupConfig.messageSettings.content.decoded.type =
+            &UA_TYPES[UA_TYPES_UADPWRITERGROUPMESSAGEDATATYPE];
         /* The configuration flags for the messages are encapsulated inside the
          * message- and transport settings extension objects. These extension
          * objects are defined by the standard. e.g.
@@ -254,6 +258,12 @@ addWriterGroup(UA_Server *server, char *topic, int interval) {
         writerGroupConfig.messageSettings.content.decoded.data = writerGroupMessage;
     }
 
+#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && !defined(UA_ENABLE_JSON_ENCODING)
+    /* Encryption settings */
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    writerGroupConfig.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+    writerGroupConfig.securityPolicy = &config->pubSubConfig.securityPolicies[0];
+#endif
 
     /* configure the mqtt publish topic */
     UA_BrokerWriterGroupTransportDataType brokerTransportSettings;
@@ -265,7 +275,8 @@ addWriterGroup(UA_Server *server, char *topic, int interval) {
     brokerTransportSettings.authenticationProfileUri = UA_STRING_NULL;
 
     /* Choose the QOS Level for MQTT */
-    brokerTransportSettings.requestedDeliveryGuarantee = UA_BROKERTRANSPORTQUALITYOFSERVICE_BESTEFFORT;
+    brokerTransportSettings.requestedDeliveryGuarantee =
+        UA_BROKERTRANSPORTQUALITYOFSERVICE_BESTEFFORT;
 
     /* Encapsulate config in transportSettings */
     UA_ExtensionObject transportSettings;
@@ -275,22 +286,25 @@ addWriterGroup(UA_Server *server, char *topic, int interval) {
     transportSettings.content.decoded.data = &brokerTransportSettings;
 
     writerGroupConfig.transportSettings = transportSettings;
-    retval = UA_Server_addWriterGroup(server, connectionIdent, &writerGroupConfig, &writerGroupIdent);
-
-    if (retval == UA_STATUSCODE_GOOD)
-        UA_Server_setWriterGroupOperational(server, writerGroupIdent);
+    UA_Server_addWriterGroup(server, connectionIdent, &writerGroupConfig, &writerGroupIdent);
 
 #ifdef UA_ENABLE_JSON_ENCODING
-    if (useJson) {
+    if(useJson) {
         UA_JsonWriterGroupMessageDataType_delete(Json_writerGroupMessage);
     }
 #endif
 
-    if (!useJson && writerGroupMessage) {
+    if(!useJson && writerGroupMessage) {
         UA_UadpWriterGroupMessageDataType_delete(writerGroupMessage);
     }
 
-    return retval;
+#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && !defined(UA_ENABLE_JSON_ENCODING)
+    /* Add the encryption key informaton */
+    UA_ByteString sk = {UA_AES128CTR_SIGNING_KEY_LENGTH, signingKey};
+    UA_ByteString ek = {UA_AES128CTR_KEY_LENGTH, encryptingKey};
+    UA_ByteString kn = {UA_AES128CTR_KEYNONCE_LENGTH, keyNonce};
+    UA_Server_setWriterGroupEncryptionKeys(server, writerGroupIdent, 1, sk, ek, kn);
+#endif
 }
 
 /**
@@ -323,7 +337,8 @@ addDataSetWriter(UA_Server *server, char *topic) {
              UA_JSONDATASETMESSAGECONTENTMASK_TIMESTAMP);
 
         messageSettings.encoding = UA_EXTENSIONOBJECT_DECODED;
-        messageSettings.content.decoded.type = &UA_TYPES[UA_TYPES_JSONDATASETWRITERMESSAGEDATATYPE];
+        messageSettings.content.decoded.type =
+            &UA_TYPES[UA_TYPES_JSONDATASETWRITERMESSAGEDATATYPE];
         messageSettings.content.decoded.data = &jsonDswMd;
 
         dataSetWriterConfig.messageSettings = messageSettings;
@@ -344,13 +359,15 @@ addDataSetWriter(UA_Server *server, char *topic) {
     brokerTransportSettings.metaDataUpdateTime = PUBLISHER_METADATAUPDATETIME;
 
     /* Choose the QOS Level for MQTT */
-    brokerTransportSettings.requestedDeliveryGuarantee = UA_BROKERTRANSPORTQUALITYOFSERVICE_BESTEFFORT;
+    brokerTransportSettings.requestedDeliveryGuarantee =
+        UA_BROKERTRANSPORTQUALITYOFSERVICE_BESTEFFORT;
 
     /* Encapsulate config in transportSettings */
     UA_ExtensionObject transportSettings;
     memset(&transportSettings, 0, sizeof(UA_ExtensionObject));
     transportSettings.encoding = UA_EXTENSIONOBJECT_DECODED;
-    transportSettings.content.decoded.type = &UA_TYPES[UA_TYPES_BROKERDATASETWRITERTRANSPORTDATATYPE];
+    transportSettings.content.decoded.type =
+        &UA_TYPES[UA_TYPES_BROKERDATASETWRITERTRANSPORTDATATYPE];
     transportSettings.content.decoded.data = &brokerTransportSettings;
 
     dataSetWriterConfig.transportSettings = transportSettings;
@@ -373,11 +390,6 @@ addDataSetWriter(UA_Server *server, char *topic) {
  * which already contains the decoding code for UADP messages.
  *
  * It follows the main server code, making use of the above definitions. */
-UA_Boolean running = true;
-static void stopHandler(int sign) {
-    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_SERVER, "received ctrl-c");
-    running = false;
-}
 
 static void usage(void) {
     printf("Usage: tutorial_pubsub_mqtt_publish [--url <opc.mqtt://hostname:port>] "
@@ -392,9 +404,6 @@ static void usage(void) {
 }
 
 int main(int argc, char **argv) {
-    signal(SIGINT, stopHandler);
-    signal(SIGTERM, stopHandler);
-
     /* TODO: Change to secure mqtt port:8883 */
     char *addressUrl = BROKER_ADDRESS_URL;
     char *topic = PUBLISHER_TOPIC;
@@ -408,7 +417,12 @@ int main(int argc, char **argv) {
         }
 
         if(strcmp(argv[argpos], "--json") == 0) {
+#ifdef UA_ENABLE_JSON_ENCODING
             useJson = true;
+#else 
+            printf("Json encoding not enabled (UA_ENABLE_JSON_ENCODING)\n");
+            useJson = false;
+#endif
             continue;
         }
 
@@ -454,27 +468,27 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    /* Set up the server config */
     UA_Server *server = UA_Server_new();
+
+#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS)
+    /* Instantiate the PubSub SecurityPolicy */
     UA_ServerConfig *config = UA_Server_getConfig(server);
-    /* Details about the connection configuration and handling are located in
-     * the pubsub connection tutorial */
-    UA_ServerConfig_setDefault(config);
-    UA_ServerConfig_addPubSubTransportLayer(config, UA_PubSubTransportLayerMQTT());
+    config->pubSubConfig.securityPolicies = (UA_PubSubSecurityPolicy*)
+        UA_malloc(sizeof(UA_PubSubSecurityPolicy));
+    config->pubSubConfig.securityPoliciesSize = 1;
+    UA_PubSubSecurityPolicy_Aes128Ctr(config->pubSubConfig.securityPolicies,
+                                      config->logging);
+#endif
 
     addPubSubConnection(server, addressUrl);
     addPublishedDataSet(server);
     addDataSetField(server);
-    retval = addWriterGroup(server, topic, interval);
-    if (UA_STATUSCODE_GOOD != retval)
-    {
-        UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_SERVER, "Error Name = %s", UA_StatusCode_name(retval));
-        return EXIT_FAILURE;
-    }
+    addWriterGroup(server, topic, interval);
     addDataSetWriter(server, topic);
 
-    UA_Server_run(server, &running);
+    UA_Server_enableAllPubSubComponents(server);
+    UA_Server_runUntilInterrupt(server);
+
     UA_Server_delete(server);
     return 0;
 }

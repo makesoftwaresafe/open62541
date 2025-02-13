@@ -22,6 +22,7 @@
 
 #include "client/ua_client_internal.h"
 #include <server/ua_server_internal.h>
+#include "test_helpers.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -55,7 +56,7 @@ static void start_server(void) {
     UA_ServerConfig *config = UA_Server_getConfig(server);
     config->applicationDescription.applicationType = UA_APPLICATIONTYPE_SERVER;
     config->mdnsEnabled = true;
-    config->mdnsConfig.mdnsServerName = UA_String_fromChars("Sample Multicast Server");
+    config->mdnsConfig.mdnsServerName = UA_String_fromChars("Sample-Multicast-Server");
 
     UA_Server_run_startup(server);
     pthread_create(&server_thread, NULL, serverloop, NULL);
@@ -427,9 +428,9 @@ subscriptionRequests(UA_Client *client) {
     UA_PublishRequest publishRequest;
     UA_PublishRequest_init(&publishRequest);
     ASSERT_GOOD(UA_Client_preparePublishRequest(client, &publishRequest));
-    UA_Client_sendAsyncRequest(client, &publishRequest,
-                               &UA_TYPES[UA_TYPES_PUBLISHREQUEST], NULL,
-                               &UA_TYPES[UA_TYPES_PUBLISHRESPONSE], NULL, NULL);
+    __UA_Client_AsyncService(client, &publishRequest,
+                             &UA_TYPES[UA_TYPES_PUBLISHREQUEST], NULL,
+                             &UA_TYPES[UA_TYPES_PUBLISHRESPONSE], NULL, NULL);
     // here we don't care about the return value since it may be UA_STATUSCODE_BADMESSAGENOTAVAILABLE
     // ASSERT_GOOD(publishResponse.responseHeader.serviceResult);
     UA_PublishRequest_clear(&publishRequest);
@@ -567,8 +568,7 @@ int main(void) {
     emptyCorpusDir();
     start_server();
 
-    UA_Client *client = UA_Client_new();
-    UA_ClientConfig_setDefault(UA_Client_getConfig(client));
+    UA_Client *client = UA_Client_newForUnitTest();
 
     // this will also call getEndpointsRequest
     UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
@@ -579,8 +579,7 @@ int main(void) {
 
     if(retval == UA_STATUSCODE_GOOD) {
         // now also connect with user/pass so that fuzzer also knows how to do that
-        client = UA_Client_new();
-        UA_ClientConfig_setDefault(UA_Client_getConfig(client));
+        client = UA_Client_newForUnitTest();
         retval = UA_Client_connectUsername(client, "opc.tcp://localhost:4840", "user1", "password");
         retval = retval == UA_STATUSCODE_BADUSERACCESSDENIED ? UA_STATUSCODE_GOOD : retval;
         UA_Client_disconnect(client);

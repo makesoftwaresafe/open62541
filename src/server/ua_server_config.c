@@ -8,8 +8,10 @@
 
 #include <open62541/server.h>
 
+#include "ua_server_internal.h"
+
 void
-UA_ServerConfig_clean(UA_ServerConfig *config) {
+UA_ServerConfig_clear(UA_ServerConfig *config) {
     if(!config)
         return;
 
@@ -18,12 +20,14 @@ UA_ServerConfig_clean(UA_ServerConfig *config) {
     UA_ApplicationDescription_clear(&config->applicationDescription);
 #ifdef UA_ENABLE_DISCOVERY_MULTICAST
     UA_MdnsDiscoveryConfiguration_clear(&config->mdnsConfig);
+#ifdef UA_ENABLE_DISCOVERY_MULTICAST_MDNSD
     UA_String_clear(&config->mdnsInterfaceIP);
 # if !defined(UA_HAS_GETIFADDR)
     if (config->mdnsIpAddressListSize) {
         UA_free(config->mdnsIpAddressList);
     }
 # endif
+#endif
 #endif
 
     /* Stop and delete the EventLoop */
@@ -69,8 +73,10 @@ UA_ServerConfig_clean(UA_ServerConfig *config) {
     }
 
     /* Certificate Validation */
-    if(config->certificateVerification.clear)
-        config->certificateVerification.clear(&config->certificateVerification);
+    if(config->secureChannelPKI.clear)
+        config->secureChannelPKI.clear(&config->secureChannelPKI);
+    if(config->sessionPKI.clear)
+        config->sessionPKI.clear(&config->sessionPKI);
 
     /* Access Control */
     if(config->accessControl.clear)
@@ -82,14 +88,7 @@ UA_ServerConfig_clean(UA_ServerConfig *config) {
         config->historyDatabase.clear(&config->historyDatabase);
 #endif
 
-    /* Logger */
-    if(config->logger.clear)
-        config->logger.clear(config->logger.context);
-    config->logger.log = NULL;
-    config->logger.clear = NULL;
-
 #ifdef UA_ENABLE_PUBSUB
-#ifdef UA_ENABLE_PUBSUB_ENCRYPTION
     if(config->pubSubConfig.securityPolicies != NULL) {
         for(size_t i = 0; i < config->pubSubConfig.securityPoliciesSize; i++) {
             config->pubSubConfig.securityPolicies[i].clear(&config->pubSubConfig.securityPolicies[i]);
@@ -98,26 +97,14 @@ UA_ServerConfig_clean(UA_ServerConfig *config) {
         config->pubSubConfig.securityPolicies = NULL;
         config->pubSubConfig.securityPoliciesSize = 0;
     }
-#endif
 #endif /* UA_ENABLE_PUBSUB */
-}
 
-#ifdef UA_ENABLE_PUBSUB
-/* Add a pubsubTransportLayer to the configuration. Memory is reallocated on
- * demand. */
-UA_StatusCode
-UA_ServerConfig_addPubSubTransportLayer(UA_ServerConfig *config,
-                                        UA_PubSubTransportLayer pubsubTransportLayer) {
-    UA_PubSubTransportLayer *tmpLayers = (UA_PubSubTransportLayer*)
-        UA_realloc(config->pubSubConfig.transportLayers,
-                   sizeof(UA_PubSubTransportLayer) *
-                   (config->pubSubConfig.transportLayersSize + 1));
-    if(tmpLayers == NULL)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
+    /* Logger */
+    if(config->logging != NULL && config->logging->clear != NULL)
+        config->logging->clear(config->logging);
+    config->logging = NULL;
 
-    config->pubSubConfig.transportLayers = tmpLayers;
-    config->pubSubConfig.transportLayers[config->pubSubConfig.transportLayersSize] = pubsubTransportLayer;
-    config->pubSubConfig.transportLayersSize++;
-    return UA_STATUSCODE_GOOD;
+    /* Custom Data Types */
+    UA_cleanupDataTypeWithCustom(config->customDataTypes);
+    config->customDataTypes = NULL;
 }
-#endif /* UA_ENABLE_PUBSUB */
